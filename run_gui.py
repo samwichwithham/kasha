@@ -26,6 +26,11 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
+        # A simple class to mimic the argparse Namespace object that main() expects
+class Args:
+    def __init__(self, d):
+        self.__dict__.update(d)
+
 # ----------------------------- Dynamic Paths -----------------------------
 HOME = os.path.expanduser("~")
 # The root directory of the project is the parent of the folder containing this script.
@@ -493,11 +498,6 @@ class App(tk.Tk):
 
         # Gather all settings from the GUI into a dictionary
         config_dict = self.gather_current_config()
-        
-        # A simple class to mimic the argparse Namespace object that main() expects
-        class Args:
-            def __init__(self, d):
-                self.__dict__.update(d)
 
         args_obj = Args(config_dict)
         

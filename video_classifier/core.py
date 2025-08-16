@@ -433,7 +433,6 @@ def process_one(path: Path, args: argparse.Namespace, do_exif: bool) -> VideoFea
     return vf
 
 # --------------------------------- Main --------------------------------------
-
 def main(args: object) -> None:
 
     print("DEBUG: starting classifier")
