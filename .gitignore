@@ -1,0 +1,21 @@
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# Logs (if you create them)
+logs/
+*.log
+
+# User-specific config (optional, but good practice)
+# If you want to track a template but not your personal config,
+# you can commit a config.template.xml and ignore config.xml
+config/config.xml
+
+# Output files from your script
+*.csv
+*.txt
+
+# OS-specific files
+.DS_Store
+Thumbs.db
