@@ -1,18 +1,20 @@
-# Python virtual environment
-venv/
+# Python general
 __pycache__/
 *.pyc
 
-# Logs (if you create them)
+# PDM
+.pdm.toml
+.pdm-build/
+.venv
+
+# Logs
 logs/
 *.log
 
-# User-specific config (optional, but good practice)
-# If you want to track a template but not your personal config,
-# you can commit a config.template.xml and ignore config.xml
+# User-specific config
 config/config.xml
 
-# Output files from your script
+# Output files
 *.csv
 *.txt
 
