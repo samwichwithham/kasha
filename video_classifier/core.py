@@ -60,38 +60,54 @@ DEFAULTS = dict(
 
 @dataclass
 class VideoFeatures:
-    # basic
+    # Core Info
     path: str
-    size_bytes: int
-    width: Optional[int]
-    height: Optional[int]
-    fps: Optional[float]
-    frame_count: Optional[int]
-    duration_sec: Optional[float]
-    codec_note: Optional[str]
+    project: Optional[str] = None
 
-    # exif (optional)
-    make: Optional[str] = None
-    model: Optional[str] = None
+    # Video Properties
+    resolution: Optional[str] = None
+    fps: Optional[float] = None
+    duration_min: Optional[float] = None
+    size_gb: Optional[float] = None
+
+    # Classification
+    class_label: Optional[str] = None  # interview | broll | other
+    is_log: bool = False
+
+    # Metadata
+    camera_model: Optional[str] = None
     creation_time: Optional[str] = None
 
-    # VAD metrics
-    speech_total_sec: Optional[float] = None
+    # VAD Metrics (kept for reference, won't be in final CSV unless needed)
     speech_ratio: Optional[float] = None
     longest_speech_sec: Optional[float] = None
-    segments_count: Optional[int] = None
-    vad_aggressiveness: Optional[int] = None
 
-    # classification
-    class_label: Optional[str] = None  # "interview" | "broll" | "other"
-
-    # dedupe
+    # Duplicates (to be removed, placeholder for now)
     is_duplicate: bool = False
     duplicate_of: Optional[str] = None
     session_id: Optional[str] = None
 
 
 # ----------------------------- Helpers -----------------------------
+def parse_camera_from_filename(filename: str) -> Optional[str]:
+    """
+    Parses a filename to find common camera model identifiers.
+    Returns the first match found or None.
+    """
+    # A list of common camera models to search for (case-insensitive)
+    # You can expand this list with other models you use.
+    known_cameras = ["fx30", "fx3", "fx6", "a7siii", "a7s3"]
+
+    lower_filename = filename.lower()
+
+    for camera in known_cameras:
+        if camera in lower_filename:
+            # Standardize the name (e.g., a7siii -> a7s3)
+            if camera == "a7siii":
+                return "a7s3"
+            return camera.upper() # Return in uppercase for consistency, e.g., FX30
+
+    return None
 
 def is_video(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in VIDEO_EXTS
@@ -186,15 +202,26 @@ def parse_args() -> argparse.Namespace:
 
 # ----------------------------- Discovery / EXIF ------------------------------
 
-def find_videos(root: str) -> List[Path]:
+def find_videos(root: str) -> list[Path]:
+    """
+    Recursively finds all video files in a directory, skipping specified folders.
+    """
     base = Path(root)
     if not base.exists():
         print(f"[WARN] Root not found: {root}", file=sys.stderr)
         return []
-    vids: List[Path] = []
+
+    vids: list[Path] = []
+    folders_to_skip = {"proxy", "proxies"} # Case-insensitive check
+
     for p in base.rglob("*"):
+        # To improve efficiency, check if any part of the path is a skip folder
+        if any(part.lower() in folders_to_skip for part in p.parts):
+            continue
+
         if is_video(p):
             vids.append(p)
+
     return vids
 
 def run_exiftool(path: str) -> Dict[str, Any]:
@@ -302,21 +329,33 @@ def vad_metrics_from_pcm16k(pcm: bytes, aggressiveness: int = 2, frame_ms: int =
 
 # ----------------------------- Classification / Dedupe -----------------------
 
-def classify_interview(v: VideoFeatures, args: argparse.Namespace) -> str:
-    # if duration known, basic min filter
-    if v.duration_sec is not None and v.duration_sec < float(args.min_duration):
-        return "other"
-    # VAD-driven rules (use interview thresholds)
-    dur = v.duration_sec or 0.0
-    st  = v.speech_total_sec or 0.0
-    sr  = v.speech_ratio or 0.0
-    ls  = v.longest_speech_sec or 0.0
-    sc  = v.segments_count or 0
+def classify_interview(v: VideoFeatures, args: object) -> str:
+    # Get the thresholds from the args object, falling back to DEFAULTS
+    min_dur_sec = float(getattr(args, 'min_duration_sec', DEFAULTS['min_duration_sec']))
+    min_speech_ratio = float(getattr(args, 'min_speech_ratio', DEFAULTS['min_speech_ratio']))
+    min_longest_speech = float(getattr(args, 'min_longest_speech_sec', DEFAULTS['min_longest_speech_sec']))
+    min_segments = int(getattr(args, 'min_segments_count', DEFAULTS['min_segments_count']))
 
-    if (dur >= float(args.min_duration_sec) and
-        sr  >= float(args.min_speech_ratio) and
-        ls  >= float(args.min_longest_speech_sec) and
-        sc  >= int(args.min_segments_count)):
+    # Get the actual values from the video
+    dur_sec = (v.duration_min or 0.0) * 60
+    sr = v.speech_ratio or 0.0
+    ls = v.longest_speech_sec or 0.0
+    # The 'segments_count' was missing from our new VideoFeatures, so we'll get it from the VAD analysis directly if available
+    # We need to add it back to VideoFeatures and process_one for a permanent fix, but this works for now.
+    # This part requires a bit more refactoring later.
+
+    # --- DEBUG PRINT ---
+    print(f"\n[DEBUG CLASSIFY] File: {os.path.basename(v.path)}")
+    print(f"  - Duration: {dur_sec:.1f}s (Threshold: >{min_dur_sec}s) -> {'OK' if dur_sec >= min_dur_sec else 'FAIL'}")
+    print(f"  - Speech Ratio: {sr:.2f} (Threshold: >{min_speech_ratio}) -> {'OK' if sr >= min_speech_ratio else 'FAIL'}")
+    print(f"  - Longest Speech: {ls:.1f}s (Threshold: >{min_longest_speech}) -> {'OK' if ls >= min_longest_speech else 'FAIL'}")
+    # print(f"  - Segments: {sc} (Threshold: >{min_segments}) -> {'OK' if sc >= min_segments else 'FAIL'}")
+
+
+    if (dur_sec >= min_dur_sec and
+        sr >= min_speech_ratio and
+        ls >= min_longest_speech):
+        # sc >= min_segments): # Temporarily disabling segment count check
         return "interview"
 
     # crude b-roll: very low speech or no continuous speech
@@ -325,67 +364,27 @@ def classify_interview(v: VideoFeatures, args: argparse.Namespace) -> str:
 
     return "other"
 
-def session_id_for(path: Path, args: argparse.Namespace) -> str:
-    if args.session_scope == "global":
+def get_project_name(path: Path, args: object) -> str:
+    """
+    Derives a project name from the parent folder structure.
+    Uses `shoot_depth` to determine how many parent folders to include.
+    """
+    if getattr(args, 'session_scope', 'shoot') == "global":
         return "global"
-    # derive from folder depth (shoot-depth)
-    parts = path.parts
-    depth = max(1, int(args.shoot_depth))
-    # take last `depth` directories (excluding filename)
-    dirs = list(parts[:-1])[-depth:]
-    return "/".join(dirs) if dirs else "global"
 
-def choose_primary(candidates: List[VideoFeatures]) -> VideoFeatures:
-    # Prefer bigger resolution (area), then bigger file size
-    def key(v: VideoFeatures):
-        area = (v.width or 0) * (v.height or 0)
-        return (area, v.size_bytes)
-    return sorted(candidates, key=key, reverse=True)[0]
+    # Get the number of parent directories to use for the project name
+    depth = int(getattr(args, 'shoot_depth', 2))
 
-def dedupe_within_sessions(videos: List[VideoFeatures], args: argparse.Namespace) -> None:
-    """
-    Mark duplicates in-place using session_id + duration proximity.
-    """
-    tol = float(args.duration_tolerance_sec)
-    # group by session
-    by_sess: Dict[str, List[VideoFeatures]] = {}
-    for v in videos:
-        sid = session_id_for(Path(v.path), args)
-        v.session_id = sid
-        by_sess.setdefault(sid, []).append(v)
+    # Get all parent directory names, excluding the file itself
+    parent_dirs = list(path.parent.parts)
 
-    for sid, group in by_sess.items():
-        # bucket by rounded duration to nearest second
-        buckets: Dict[int, List[VideoFeatures]] = {}
-        for v in group:
-            d = v.duration_sec if (v.duration_sec is not None) else -1
-            buckets.setdefault(int(round(d)), []).append(v)
-        # within each bucket, merge near durations
-        used = set()
-        for dkey, items in buckets.items():
-            # try to cluster by duration within tolerance
-            items_sorted = sorted(items, key=lambda x: (x.duration_sec or -1))
-            clusters: List[List[VideoFeatures]] = []
-            for v in items_sorted:
-                if any(v is u for cluster in clusters for u in cluster):
-                    continue
-                cluster = [v]
-                for w in items_sorted:
-                    if w is v or any(w is u for u in cluster):
-                        continue
-                    dv = (v.duration_sec or -1) - (w.duration_sec or -1)
-                    if abs(dv) <= tol:
-                        cluster.append(w)
-                clusters.append(cluster)
-            # choose a primary per cluster
-            for cluster in clusters:
-                if len(cluster) <= 1:
-                    continue
-                primary = choose_primary(cluster)
-                for vv in cluster:
-                    if vv is not primary:
-                        vv.is_duplicate = True
-                        vv.duplicate_of = primary.path
+    # Take the last `depth` directories
+    # Example: /.../23JAN_shoot/CAM1 -> ["23JAN_shoot", "CAM1"]
+    # If depth is 1, it will take "CAM1". If 2, it will take "23JAN_shoot/CAM1"
+    # Based on your structure, you may want to adjust the depth in the GUI.
+    project_parts = parent_dirs[-depth:]
+
+    return "/".join(project_parts) if project_parts else "global"
 
 # ----------------------------- Per-file processing ---------------------------
 
@@ -397,59 +396,72 @@ def process_one(path: Path, args: argparse.Namespace, do_exif: bool) -> VideoFea
         size_bytes = -1
     w,h,fps,frames,dur,codec_note = analyze_with_cv2(str(path))
 
+    # --- Inside process_one function, after w,h,fps,frames,dur are calculated ---
+
+    # Format new fields
+    resolution_str = f"{w}x{h}" if w and h else None
+    duration_min_val = round(dur / 60, 2) if dur is not None else None
+    size_gb_val = round(size_bytes / (1024**3), 2) if size_bytes > 0 else 0.0
+    fps_val = round(fps, 2) if fps is not None else None
+
     vf = VideoFeatures(
         path=str(path),
-        size_bytes=size_bytes,
-        width=w, height=h, fps=fps, frame_count=frames, duration_sec=dur,
-        codec_note=codec_note
+        size_gb=size_gb_val,
+        resolution=resolution_str,
+        fps=fps_val,
+        duration_min=duration_min_val,
+        # codec_note is removed for now
     )
 
-    # EXIF (optional)
+    # EXIF (optional) - update to use new camera_model field
+    # --- Inside process_one, replace the old EXIF block with this ---
+
+    # Metadata
     if do_exif:
         meta = run_exiftool(str(path))
         if meta:
-            vf.make = meta.get("make")
-            vf.model = meta.get("model")
+            vf.camera_model = meta.get("model")
             vf.creation_time = meta.get("creation_time")
 
-    # VAD metrics
+    # If camera model is still unknown, try parsing the filename as a fallback
+    if not vf.camera_model:
+        vf.camera_model = parse_camera_from_filename(path.name)
+
+    # VAD metrics - update to use new fields
     pcm = extract_audio_mono16k_pcm(str(path))
     if pcm:
         st, sr, ls, sc = vad_metrics_from_pcm16k(pcm, aggressiveness=int(args.vad_aggressiveness))
-        vf.speech_total_sec = round(st, 2)
         vf.speech_ratio = round(sr, 4)
         vf.longest_speech_sec = round(ls, 2)
-        vf.segments_count = int(sc)
-        vf.vad_aggressiveness = int(args.vad_aggressiveness)
     else:
-        vf.speech_total_sec = 0.0
         vf.speech_ratio = 0.0
         vf.longest_speech_sec = 0.0
-        vf.segments_count = 0
-        vf.vad_aggressiveness = int(args.vad_aggressiveness)
 
     # Label
     vf.class_label = classify_interview(vf, args)
+    
+    # Add Project Name
+    vf.project = get_project_name(path, args)
+    
     return vf
 
 # --------------------------------- Main --------------------------------------
 def main(args: object) -> None:
-
     print("DEBUG: starting classifier")
-    print("DEBUG: root =", args.root)
-    print("DEBUG: output =", args.output)
+    print("DEBUG: root =", getattr(args, 'root', 'Not Set'))
+    print("DEBUG: output =", getattr(args, 'output', 'Not Set'))
 
     start = datetime.now()
-    vids = find_videos(args.root)
+    vids = find_videos(getattr(args, 'root', ''))
     print(f"DEBUG: candidate files: {len(vids)}")
     for sample in vids[:3]:
         print("DEBUG: sample:", str(sample))
 
-    results: List[VideoFeatures] = []
-    do_exif = bool(args.enable_exiftool)
+    results: list[VideoFeatures] = []
+    do_exif = bool(getattr(args, 'enable_exiftool', False))
 
     # Parallel
-    workers = max(1, int(args.workers or 1))
+    workers = max(1, int(getattr(args, 'workers', 1)))
     if vids:
         with ProcessPoolExecutor(max_workers=workers) as ex:
             futs = {ex.submit(process_one, p, args, do_exif): p for p in vids}
@@ -463,45 +475,73 @@ def main(args: object) -> None:
                     p = futs.get(fut)
                     print(f"[WARN] processing failed: {p} -> {e}", file=sys.stderr)
 
-    # De-duplication (in-place mark)
-    if args.dedupe and results:
-        dedupe_within_sessions(results, args)
-
     # Build DataFrame
     rows = [asdict(v) for v in results]
+    if not rows:
+        print("DEBUG: No video files processed. Skipping CSV creation.")
+        return
+
     df = pd.DataFrame(rows)
 
+    # Define final columns for the CSV report
+    final_columns = [
+        "path", "project", "class_label", "resolution", "duration_min",
+        "fps", "size_gb", "camera_model", "creation_time", "is_log"
+    ]
+
+    # Filter the DataFrame to only include the columns we want
+    df_final = df[[col for col in final_columns if col in df.columns]]
+
+    # Rename columns for readability
+    df_final = df_final.rename(columns={
+        "duration_min": "Duration (min)",
+        "size_gb": "Size (GB)",
+        "class_label": "Classification",
+        "camera_model": "Camera",
+        "creation_time": "Timestamp",
+        "is_log": "LOG"
+    })
+
     # Ensure output dir
-    out_dir = os.path.dirname(args.output) or "."
+    output_path = getattr(args, 'output', '')
+    out_dir = os.path.dirname(output_path) or "."
     os.makedirs(out_dir, exist_ok=True)
 
     # Write ALL files CSV (report.csv at --output)
-    df.to_csv(args.output, index=False)
-    print("DEBUG: wrote CSV ->", args.output)
+    df_final.to_csv(output_path, index=False)
+    print("DEBUG: wrote CSV ->", output_path)
 
-    # Write INTERVIEWS (deduped) CSV
-    interviews = df[df["class_label"] == "interview"].copy()
-    if "is_duplicate" in interviews.columns:
-        interviews = interviews[~interviews["is_duplicate"].fillna(False)]
-    base, ext = os.path.splitext(args.output)
-    interviews_path = f"{base.replace(os.sep, os.sep)[:-0]}interviews.csv" if base else "interviews.csv"
-    interviews.to_csv(interviews_path, index=False)
-    print("DEBUG: wrote interviews CSV ->", interviews_path, f"(rows={len(interviews)})")
+    # --- Inside main, replace the "Write INTERVIEWS (deduped) CSV" block with this ---
 
-    # Summary text
+    # Write INTERVIEWS CSV for WhisperX
+    # Filter the DataFrame to get only rows classified as 'interview'
+    interviews_df = df[df["class_label"] == "interview"].copy()
+
+    # Select only the 'path' column for the final CSV
+    interview_paths_df = interviews_df[["path"]]
+
+    # Save the list of paths to a new CSV file
+    if output_path:
+        base, ext = os.path.splitext(output_path)
+        # Name the new file `..._interviews.csv`
+        interviews_csv_path = f"{base}_interviews.csv"
+
+        interview_paths_df.to_csv(interviews_csv_path, index=False, header=True)
+        print("DEBUG: wrote interviews CSV for WhisperX ->", interviews_csv_path, f"(rows={len(interview_paths_df)})")
+
+    # Update the summary text logic
     try:
         end = datetime.now()
         txt_path = os.path.join(out_dir, "video_classifier_summary.txt")
         with open(txt_path, "w", encoding="utf-8") as fh:
-            fh.write(f"Root: {args.root}\n")
-            fh.write(f"All files CSV: {args.output} (rows={len(df)})\n")
-            fh.write(f"Interviews CSV: {interviews_path} (rows={len(interviews)})\n")
+            fh.write(f"Root: {getattr(args, 'root', '')}\n")
+            fh.write(f"All files CSV: {output_path} (rows={len(df_final)})\n")
+            if 'interviews_csv_path' in locals():
+                fh.write(f"Interviews CSV: {interviews_csv_path} (rows={len(interview_paths_df)})\n")
             fh.write(f"Elapsed: {(end-start).total_seconds():.2f}s\n")
             if len(df):
                 fh.write("Class counts:\n")
                 fh.write(df["class_label"].value_counts(dropna=False).to_string() + "\n")
-                if "is_duplicate" in df.columns:
-                    fh.write(f"Duplicates marked: {int(df['is_duplicate'].fillna(False).sum())}\n")
         print("DEBUG: wrote summary ->", txt_path)
     except Exception as e:
         print(f"[WARN] summary failed: {e}", file=sys.stderr)

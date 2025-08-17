@@ -151,11 +151,11 @@ DEFAULTS: Dict[str, Any] = {
     "enable_exiftool": "false",
 
     # interview detector defaults (match script DEFAULTS)
-    "min_duration_sec": 120.0,
-    "min_speech_ratio": 0.25,
-    "min_longest_speech_sec": 20.0,
-    "min_segments_count": 3,
-    "vad_aggressiveness": 2,
+    "min_duration_sec": 60.0,
+    "min_speech_ratio": 0.15,
+    "min_longest_speech_sec": 10.0,
+    "min_segments_count": 2,
+    "vad_aggressiveness": 1,
     "duration_tolerance_sec": 3.0,
 }
 
@@ -240,7 +240,7 @@ class App(tk.Tk):
         self.vars: Dict[str, tk.Variable] = {k: tk.StringVar(value=str(v)) for k, v in DEFAULTS.items()}
 
         # Beginner presets state
-        self.sensitivity_choice = tk.StringVar(value="Balanced (recommended)")
+        self.sensitivity_choice = tk.StringVar(value="Lenient (find more)")
         self.dedupe_choice = tk.StringVar(value="Within shoot (default)")
         self.speed_choice = tk.StringVar(value="Balanced")
         self.advanced_visible = tk.BooleanVar(value=False)
