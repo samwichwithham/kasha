@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 # -*- coding: utf-8 -*-
 # Kasha
 # Copyright (C) 2025 Samuel Markovich
@@ -33,7 +35,6 @@ Dependencies:
 import spacy
 import tensorflow as tf
 import tensorflow_hub as hub
-from __future__ import annotations
 import os, sys, argparse, xml.etree.ElementTree as ET, subprocess, math, json
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -556,7 +557,7 @@ def process_one(path: Path, args: argparse.Namespace, do_exif: bool) -> VideoFea
     
     # Extract Location from Project Name
     if vf.project:
-    vf.location = extract_location_from_project(vf.project)
+        vf.location = extract_location_from_project(vf.project)
     
     return vf
 

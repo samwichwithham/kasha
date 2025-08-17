@@ -18,6 +18,11 @@ config/config.xml
 *.csv
 *.txt
 
+# Build artifacts
+build/
+dist/
+*.spec
+
 # OS-specific files
 .DS_Store
 Thumbs.db

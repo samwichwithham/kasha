@@ -84,7 +84,9 @@ class Tooltip:
         label = tk.Label(
             tw, text=self.text, justify="left",
             relief="solid", borderwidth=1,
-            background="#ffffe0", wraplength=self.wraplength
+            background="#ffffe0",
+            foreground="black",  # <-- Add this line
+            wraplength=self.wraplength
         )
         label.pack(ipadx=8, ipady=5)
 
@@ -175,30 +177,25 @@ DEDUP_PRESETS = {
     "Across project (global)": dict(dedupe="true", session_scope="global", duration_tolerance_sec=3.0),
 }
 
-SPEED_PRESETS = {
-    "Quiet laptop": dict(workers=2),
-    "Balanced": dict(workers=4),
-    "Max speed": dict(workers=8),
-}
-
 # Tooltips text
 TOOLTIPS = {
-    "root": "Folder to scan. The app searches all subfolders for video files.",
-    "output": "Where to save the CSV report. The app also writes interviews.csv next to it.",
-    "sensitivity": "How aggressively to label files as interviews based on speech activity.\nLenient finds more; Strict avoids false positives.",
-    "dedupe_mode": "Remove duplicate camera angles within a session or across the project.\nKeeps the best-quality copy.",
-    "speed": "How much parallel work to do. Higher = faster, but uses more CPU.",
-    "enable_exiftool": "If ON, uses exiftool to add camera make/model and creation time.\nRequires 'exiftool' to be installed.",
-    "advanced": "Toggle to reveal expert controls for exact thresholds and internal parameters.",
+    "root": "Select the main folder containing all your video footage. The application will scan all subfolders within this location.",
+    "output": "Choose where to save the final CSV report. Two other files, a summary.txt and a list of interviews, will be saved next to it.",
+    "sensitivity": "Controls how strictly the app identifies interviews based on speech. 'Lenient' finds more potential interviews, while 'Strict' reduces false positives.",
+    "dedupe_mode": "Handles duplicate clips. 'Within shoot' finds duplicates in the same project folder. 'Across project' finds duplicates everywhere. 'Off' disables this.",
+    "speed": "Sets the number of CPU cores to use for processing. Higher numbers are faster but use more of your computer's resources.",
+    "enable_exiftool": "If checked, the app uses 'exiftool' to read detailed camera metadata (model, creation time). Requires exiftool to be installed on your system.",
+    "advanced": "Toggles the visibility of expert-level controls for fine-tuning the classification algorithm.",
+
     # Advanced fields
-    "min_duration_sec": "Minimum clip duration (seconds) to consider for interviews.",
-    "min_speech_ratio": "Speech percentage = speech_time / clip_duration. Higher means more talking.",
-    "min_longest_speech_sec": "Minimum length (seconds) of the single longest continuous speech segment.",
-    "min_segments_count": "Minimum number of separate speech segments required.",
-    "vad_aggressiveness": "0–3: Higher is stricter (fewer false positives but may miss quiet speech).",
-    "duration_tolerance_sec": "How close (seconds) durations must be to consider clips duplicates.",
-    "session_scope": "How to group duplicates: within a shoot (by folders) or across the whole project.",
-    "shoot_depth": "How many trailing folders to treat as the 'shoot' name.\nExample: depth 2 → use last two folders.",
+    "min_duration_sec": "An interview must be at least this many seconds long.",
+    "min_speech_ratio": "Sets the minimum percentage of the clip that must contain speech (e.g., 0.25 = 25% speech).",
+    "min_longest_speech_sec": "An interview must contain at least one unbroken block of speech that is this many seconds long.",
+    "min_segments_count": "The minimum number of separate, distinct speech segments an interview must have.",
+    "vad_aggressiveness": "How strictly the voice detector identifies speech. 0 is very lenient (might count noise as speech), 3 is very strict (might miss quiet speech).",
+    "duration_tolerance_sec": "How close in duration (in seconds) two clips must be to be considered potential duplicates.",
+    "session_scope": "Defines a 'shoot'. 'shoot' groups files by their parent folder. 'global' treats all files as part of one large project.",
+    "shoot_depth": "How many parent folders to use for the 'Project' name. Example: For a path '.../MyProject/Day1/CAM1', a depth of 2 would result in a project name of 'Day1/CAM1'.",
 }
 
 # ----------------------------- XML helpers -----------------------------
@@ -293,9 +290,10 @@ class App(tk.Tk):
         Tooltip(cmb_dedupe, TOOLTIPS["dedupe_mode"])
 
         row += 1
-        ttk.Label(frame_easy, text="Performance").grid(row=row, column=0, sticky="w")
-        cmb_speed = ttk.Combobox(frame_easy, values=list(SPEED_PRESETS.keys()),
-                                 textvariable=self.speed_choice, state="readonly", width=28)
+        ttk.Label(frame_easy, text="Performance (CPU workers)").grid(row=row, column=0, sticky="w")
+        # We now offer a direct choice of worker counts
+        cmb_speed = ttk.Combobox(frame_easy, values=[1, 2, 4, 6, 8],
+                                 textvariable=self.vars["workers"], state="readonly", width=28)
         cmb_speed.grid(row=row, column=1, sticky="w", padx=4)
         Tooltip(cmb_speed, TOOLTIPS["speed"])
 
@@ -480,11 +478,6 @@ class App(tk.Tk):
         d = self.dedupe_choice.get()
         if d in DEDUP_PRESETS:
             for k, v in DEDUP_PRESETS[d].items():
-                self.vars[k].set(str(v))
-        # Apply speed
-        sp = self.speed_choice.get()
-        if sp in SPEED_PRESETS:
-            for k, v in SPEED_PRESETS[sp].items():
                 self.vars[k].set(str(v))
 
     def on_run(self):
