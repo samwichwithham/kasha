@@ -15,8 +15,11 @@ dependencies = [
     "tzdata==2025.2",
     "webrtcvad==2.0.10",
     "setuptools>=80.9.0",
+    "tensorflow>=2.20.0",
+    "tensorflow-hub>=0.16.1",
+    "spacy>=3.8.7",
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.11, <3.12"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
 

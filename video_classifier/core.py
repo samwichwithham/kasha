@@ -30,6 +30,9 @@ Dependencies:
   pip install webrtcvad numpy pandas opencv-python
 """
 
+import spacy
+import tensorflow as tf
+import tensorflow_hub as hub
 from __future__ import annotations
 import os, sys, argparse, xml.etree.ElementTree as ET, subprocess, math, json
 from dataclasses import dataclass, asdict
@@ -63,6 +66,7 @@ class VideoFeatures:
     # Core Info
     path: str
     project: Optional[str] = None
+    location: Optional[str] = None
 
     # Video Properties
     resolution: Optional[str] = None
@@ -73,6 +77,7 @@ class VideoFeatures:
     # Classification
     class_label: Optional[str] = None  # interview | broll | other
     is_log: bool = False
+    broll_tags: Optional[list[str]] = None
 
     # Metadata
     camera_model: Optional[str] = None
@@ -86,6 +91,34 @@ class VideoFeatures:
     is_duplicate: bool = False
     duplicate_of: Optional[str] = None
     session_id: Optional[str] = None
+
+# Load the spaCy model once when the module is loaded.
+# This is more efficient than reloading it for every file.
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    print("[WARN] spaCy model 'en_core_web_sm' not found. Location extraction will be skipped.")
+    print("[INFO] Run 'pdm run python -m spacy download en_core_web_sm' to install it.")
+    nlp = None
+
+def extract_location_from_project(project_string: str) -> Optional[str]:
+    """
+    Uses spaCy's Named Entity Recognition (NER) to find a location in a string.
+    It specifically looks for Geopolitical Entities (GPE).
+    """
+    if not nlp or not project_string:
+        return None
+
+    # Process the text
+    doc = nlp(project_string.replace("_", " ").replace("-", " "))
+
+    # Find the first entity that is a Geopolitical Entity (GPE)
+    for ent in doc.ents:
+        if ent.label_ == "GPE":
+            return ent.text
+
+    return None
+
 
 
 # ----------------------------- Helpers -----------------------------
@@ -386,6 +419,74 @@ def get_project_name(path: Path, args: object) -> str:
 
     return "/".join(project_parts) if project_parts else "global"
 
+# ----------------------------- log footage checker ---------------------------
+def is_video_log(frame: np.ndarray, saturation_threshold=0.10) -> bool:
+    """
+    Analyzes a single video frame to determine if it's likely LOG footage.
+    It does this by checking the image's saturation. LOG footage is very desaturated.
+
+    Args:
+        frame: A single video frame from OpenCV (in BGR format).
+        saturation_threshold: The threshold below which the average saturation is considered LOG.
+
+    Returns:
+        True if the frame is likely LOG, False otherwise.
+    """
+    try:
+        # Convert the frame from BGR to HSV (Hue, Saturation, Value) color space
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        # Calculate the average saturation across all pixels
+        # hsv_frame[:, :, 1] is the saturation channel
+        average_saturation = np.mean(hsv_frame[:, :, 1]) / 255.0  # Normalize to 0-1 range
+
+        # LOG footage has very low saturation
+        return average_saturation < saturation_threshold
+    except Exception:
+        # If any error occurs during conversion or analysis, assume it's not LOG
+        return False
+
+# ----------------------------- analyzes b-roll ---------------------------
+def classify_broll_frame(frame: np.ndarray) -> list[str]:
+    """
+    Analyzes a video frame using a pre-trained MobileNetV2 model
+    to identify its contents (e.g., indoor, outdoor, people).
+    """
+    tags = []
+    try:
+        # Load the model from TensorFlow Hub
+        model_url = "https://tfhub.dev/google/imagenet/mobilenet_v2_100_224/classification/5"
+        model = hub.load(model_url)
+
+        # Preprocess the image for the model
+        image_tensor = tf.convert_to_tensor(frame)
+        image_tensor = tf.image.resize(image_tensor, [224, 224]) / 255.0
+        image_tensor = tf.expand_dims(image_tensor, axis=0)
+
+        # Get predictions
+        predictions = model(image_tensor)
+
+        # Load ImageNet labels to understand the predictions
+        labels_path = tf.keras.utils.get_file(
+            'ImageNetLabels.txt',
+            'https://storage.googleapis.com/download.tensorflow.org/data/ImageNetLabels.txt'
+        )
+        with open(labels_path) as f:
+            labels = f.read().splitlines()
+
+        # Get the top 3 predictions
+        top_3 = tf.math.top_k(predictions, k=3)
+
+        # Check for relevant tags
+        predicted_labels = [labels[i] for i in top_3.indices.numpy()[0]]
+        tags = [label.lower() for label in predicted_labels]
+
+    except Exception as e:
+        print(f"[WARN] B-roll classification failed: {e}")
+        return ["classification_failed"]
+
+    return tags
+
 # ----------------------------- Per-file processing ---------------------------
 
 def process_one(path: Path, args: argparse.Namespace, do_exif: bool) -> VideoFeatures:
@@ -413,9 +514,19 @@ def process_one(path: Path, args: argparse.Namespace, do_exif: bool) -> VideoFea
         # codec_note is removed for now
     )
 
-    # EXIF (optional) - update to use new camera_model field
-    # --- Inside process_one, replace the old EXIF block with this ---
-
+    # --- LOG Detection ---
+    # Read a single frame from the video to analyze its properties
+    cap = cv2.VideoCapture(str(path))
+    if cap.isOpened():
+        ret, frame = cap.read()
+        if ret:
+            vf.is_log = is_video_log(frame)
+        cap.release()
+    # --- B-Roll Classification ---
+    # We'll do this after the main classification, using the same frame
+    # that we read for LOG detection.
+    if 'frame' in locals() and vf.class_label == 'broll':
+        vf.broll_tags = classify_broll_frame(frame)
     # Metadata
     if do_exif:
         meta = run_exiftool(str(path))
@@ -442,6 +553,10 @@ def process_one(path: Path, args: argparse.Namespace, do_exif: bool) -> VideoFea
     
     # Add Project Name
     vf.project = get_project_name(path, args)
+    
+    # Extract Location from Project Name
+    if vf.project:
+    vf.location = extract_location_from_project(vf.project)
     
     return vf
 
@@ -485,8 +600,8 @@ def main(args: object) -> None:
 
     # Define final columns for the CSV report
     final_columns = [
-        "path", "project", "class_label", "resolution", "duration_min",
-        "fps", "size_gb", "camera_model", "creation_time", "is_log"
+    "path", "project", "location", "class_label", "broll_tags", "resolution",
+    "duration_min", "fps", "size_gb", "camera_model", "creation_time", "is_log"
     ]
 
     # Filter the DataFrame to only include the columns we want
