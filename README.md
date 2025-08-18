@@ -36,6 +36,10 @@ This command installs the tool that manages the project's libraries. **You may n
 curl -sSL https://pdm-project.org/install-pdm.py | python3 -
 ```
 
+This command will ensure that your shell is aware of pdm's location every time you open the terminal.
+```
+echo 'export PATH="$HOME/Library/Python/3.11/bin:$PATH"' >> ~/.zshrc
+```
 -----
 
 ## 2\. Download and Set Up the Kasha Project
