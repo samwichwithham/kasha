@@ -234,48 +234,38 @@ def parse_args() -> argparse.Namespace:
         p.error("Missing --root or --output (can come from XML or CLI).")
     return args
     
-def generate_proxies(file_paths: list[str], destination_folder: str, progress_callback=None):
+def generate_proxies(file_paths: list[str], destination_folder: str, progress_callback=None, cancel_event=None):
     """
-    Generates low-resolution proxies for a list of video files using ffmpeg.
-
-    Args:
-        file_paths: A list of full paths to the video files.
-        destination_folder: The folder where the proxy files will be saved.
-        progress_callback: An optional function to call to update a progress bar.
+    Generates low-resolution proxies, now with cancellation support.
     """
     total_files = len(file_paths)
     for i, file_path in enumerate(file_paths):
+        # Check for cancellation before starting the next file
+        if cancel_event and cancel_event.is_set():
+            if progress_callback:
+                progress_callback(i, total_files, "Proxy generation cancelled.", is_error=True)
+            return
+
+        proc = None
         try:
-            # Get the original filename without the extension
             base_name = os.path.splitext(os.path.basename(file_path))[0]
-            # Create the new proxy filename
             proxy_filename = f"{base_name}_proxy.mp4"
             output_path = os.path.join(destination_folder, proxy_filename)
 
-            # --- ffmpeg Command ---
-            # -i: input file
-            # -c:v libx264: use the H.264 video codec
-            # -preset: veryfast: encoding speed preset
-            # -vf scale=-1:720: scale the video to 720p height, maintaining aspect ratio
-            # -crf 28: set the quality level (higher is lower quality)
-            # -c:a aac: use the AAC audio codec
-            # -b:a 128k: set the audio bitrate to 128kbps
-            # -y: overwrite output file if it exists
             cmd = [
-                "ffmpeg",
-                "-i", file_path,
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-vf", "scale=-1:720",
-                "-crf", "28",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-y",
+                "ffmpeg", "-i", file_path, "-c:v", "libx264", "-preset", "veryfast",
+                "-vf", "scale=-1:720", "-crf", "28", "-c:a", "aac", "-b:a", "128k", "-y",
                 output_path
             ]
 
-            # Run the command, hiding the console output from ffmpeg
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # Use Popen to have more control over the process
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            # Wait for the process to complete, but this could be enhanced with polling
+            stdout, stderr = proc.communicate()
+
+            if proc.returncode != 0:
+                raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=stderr)
 
             if progress_callback:
                 progress_callback(i + 1, total_files, f"Generated proxy for: {proxy_filename}")
@@ -284,14 +274,12 @@ def generate_proxies(file_paths: list[str], destination_folder: str, progress_ca
             error_message = f"ffmpeg error for {os.path.basename(file_path)}: {e.stderr.decode()}"
             if progress_callback:
                 progress_callback(i + 1, total_files, error_message, is_error=True)
-            else:
-                print(f"[ERROR] {error_message}")
         except Exception as e:
+            # If any other error happens, make sure to terminate the process
+            if proc: proc.terminate()
             error_message = f"Failed to process {os.path.basename(file_path)}: {e}"
             if progress_callback:
                 progress_callback(i + 1, total_files, error_message, is_error=True)
-            else:
-                print(f"[ERROR] {error_message}")
 
 # ----------------------------- Discovery / EXIF ------------------------------
 
@@ -720,6 +708,7 @@ def main(args: object) -> list[dict]:
         print("DEBUG: wrote summary ->", txt_path)
     except Exception as e:
         print(f"[WARN] summary failed: {e}", file=sys.stderr)
+    return rows
 
 if __name__ == "__main__":
     parsed_args = parse_args()
