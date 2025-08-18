@@ -26,6 +26,7 @@ Use Homebrew to install Git, Python, and the necessary GUI toolkit.
 brew install git
 brew install python@3.11
 brew install python-tk@3.11
+brew install ffmpeg
 ```
 
 ### 1.3 Install PDM (Python Dependency Manager)

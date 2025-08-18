@@ -233,6 +233,65 @@ def parse_args() -> argparse.Namespace:
     if not args.root or not args.output:
         p.error("Missing --root or --output (can come from XML or CLI).")
     return args
+    
+def generate_proxies(file_paths: list[str], destination_folder: str, progress_callback=None):
+    """
+    Generates low-resolution proxies for a list of video files using ffmpeg.
+
+    Args:
+        file_paths: A list of full paths to the video files.
+        destination_folder: The folder where the proxy files will be saved.
+        progress_callback: An optional function to call to update a progress bar.
+    """
+    total_files = len(file_paths)
+    for i, file_path in enumerate(file_paths):
+        try:
+            # Get the original filename without the extension
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            # Create the new proxy filename
+            proxy_filename = f"{base_name}_proxy.mp4"
+            output_path = os.path.join(destination_folder, proxy_filename)
+
+            # --- ffmpeg Command ---
+            # -i: input file
+            # -c:v libx264: use the H.264 video codec
+            # -preset: veryfast: encoding speed preset
+            # -vf scale=-1:720: scale the video to 720p height, maintaining aspect ratio
+            # -crf 28: set the quality level (higher is lower quality)
+            # -c:a aac: use the AAC audio codec
+            # -b:a 128k: set the audio bitrate to 128kbps
+            # -y: overwrite output file if it exists
+            cmd = [
+                "ffmpeg",
+                "-i", file_path,
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-vf", "scale=-1:720",
+                "-crf", "28",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-y",
+                output_path
+            ]
+
+            # Run the command, hiding the console output from ffmpeg
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            if progress_callback:
+                progress_callback(i + 1, total_files, f"Generated proxy for: {proxy_filename}")
+
+        except subprocess.CalledProcessError as e:
+            error_message = f"ffmpeg error for {os.path.basename(file_path)}: {e.stderr.decode()}"
+            if progress_callback:
+                progress_callback(i + 1, total_files, error_message, is_error=True)
+            else:
+                print(f"[ERROR] {error_message}")
+        except Exception as e:
+            error_message = f"Failed to process {os.path.basename(file_path)}: {e}"
+            if progress_callback:
+                progress_callback(i + 1, total_files, error_message, is_error=True)
+            else:
+                print(f"[ERROR] {error_message}")
 
 # ----------------------------- Discovery / EXIF ------------------------------
 
@@ -562,7 +621,7 @@ def process_one(path: Path, args: argparse.Namespace, do_exif: bool) -> VideoFea
     return vf
 
 # --------------------------------- Main --------------------------------------
-def main(args: object) -> None:
+def main(args: object) -> list[dict]:
     print("DEBUG: starting classifier")
     print("DEBUG: root =", getattr(args, 'root', 'Not Set'))
     print("DEBUG: output =", getattr(args, 'output', 'Not Set'))
@@ -595,7 +654,7 @@ def main(args: object) -> None:
     rows = [asdict(v) for v in results]
     if not rows:
         print("DEBUG: No video files processed. Skipping CSV creation.")
-        return
+        return rows
 
     df = pd.DataFrame(rows)
 

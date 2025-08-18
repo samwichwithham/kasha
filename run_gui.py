@@ -16,7 +16,7 @@
 import os
 import sys
 import threading
-from video_classifier.core import main as run_classifier_logic
+from video_classifier.core import main as run_classifier_logic, generate_proxies
 import subprocess
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -245,11 +245,99 @@ class App(tk.Tk):
         self._build_ui()
 
         self.proc: subprocess.Popen | None = None
+        self.results_data: list[dict] = []
 
         self.after(50, self.autoload_config)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    # ------------------- UI -------------------
+    def choose_proxy_destination(self):
+        """Opens a dialog to choose the proxy destination folder."""
+        folder = filedialog.askdirectory(title="Select Proxy Destination Folder")
+        if folder:
+            self.proxy_dest_var.set(folder)
+
+    def select_all(self):
+        """Selects all items in the TreeView."""
+        for item in self.tree.get_children():
+            self.tree.selection_add(item)
+
+    def deselect_all(self):
+        """Deselects all items in the TreeView."""
+        for item in self.tree.get_children():
+            self.tree.selection_remove(item)
+
+    def on_generate_proxies(self):
+    """Gets selected files and runs the proxy generation in a background thread."""
+    selected_items = self.tree.selection()
+    if not selected_items:
+        messagebox.showwarning("No Selection", "Please select at least one file to generate proxies.")
+        return
+
+    destination = self.proxy_dest_var.get()
+    if not destination or not os.path.isdir(destination):
+        messagebox.showwarning("Invalid Destination", "Please select a valid destination folder for the proxies.")
+        return
+
+    # Get the full file paths from the selected items in the tree
+    file_paths = [self.tree.item(item_id, "text") for item_id in selected_items]
+
+    def progress_callback(current, total, message, is_error=False):
+        """Updates the GUI from the background thread."""
+        self.progress_var.set((current / total) * 100)
+        self.progress_label_var.set(f"({current}/{total}) {message}")
+        if is_error:
+            self.log(f"[ERROR] {message}")
+
+    def task():
+        """The actual work to be done in the background."""
+        # Show progress bar and label
+        self.progress_bar.pack(side="right", fill="x", expand=True, padx=4)
+        self.progress_label.pack(side="right")
+
+        generate_proxies(file_paths, destination, progress_callback)
+
+        # Hide progress bar and label when done
+        self.progress_bar.pack_forget()
+        self.progress_label.pack_forget()
+        self.log("Proxy generation complete.")
+
+    # Run the proxy generation in a separate thread
+    threading.Thread(target=task, daemon=True).start()
+        
+    def populate_results_tree(self):
+        """Clears and repopulates the TreeView with the latest results."""
+        # Clear any old results from the tree
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # Populate the tree with new results
+        for result_item in self.results_data:
+            # We only want to display the filename, not the full path
+            filename = os.path.basename(result_item.get("path", ""))
+            classification = result_item.get("class_label", "N/A")
+            project = result_item.get("project", "N/A")
+
+            # The 'values' are what's displayed. The 'text' is a hidden identifier.
+            # We will store the full path in the 'text' field to retrieve later.
+            self.tree.insert(
+                "", "end", text=result_item.get("path", ""),
+                values=(filename, classification, project)
+            )
+    def on_tree_click(self, event):
+        """Handles double-clicks on the tree to open the file's folder."""
+        item_id = self.tree.identify_row(event.y)
+        if not item_id:
+            return
+
+        # Retrieve the full path we stored in the 'text' field
+        file_path = self.tree.item(item_id, "text")
+        if file_path and os.path.exists(file_path):
+            self.log(f"Opening folder for: {os.path.basename(file_path)}")
+            # This command opens the containing folder and selects the file in Finder
+            subprocess.run(["open", "-R", file_path])
+
+        
+# ------------------- UI -------------------
     def _build_ui(self):
         pad = {"padx": 8, "pady": 6}
 
@@ -318,15 +406,72 @@ class App(tk.Tk):
         # Build advanced grid now; show/hide later
         self._build_advanced(self.frame_adv)
 
-        # Run
+               # --- Run and Results ---
         frame_run = ttk.LabelFrame(self, text="Run")
         frame_run.pack(fill="both", expand=True, **pad)
 
-        ttk.Button(frame_run, text="Run Classifier", command=self.on_run).pack(side="left", padx=6, pady=6)
-        ttk.Button(frame_run, text="Stop", command=self.on_stop).pack(side="left", padx=6, pady=6)
+        # --- Top bar for buttons ---
+        run_bar = ttk.Frame(frame_run)
+        run_bar.pack(fill="x", padx=6, pady=6)
 
-        self.console = tk.Text(frame_run, height=18, wrap="word")
+        ttk.Button(run_bar, text="Run Classifier", command=self.on_run).pack(side="left")
+        ttk.Button(run_bar, text="Stop", command=self.on_stop).pack(side="left", padx=4)
+        self.results_button = ttk.Button(run_bar, text="Show Export Tools", command=self.toggle_results_view)
+        self.results_button.pack(side="right")
+        self.results_button.state(['disabled']) # Disabled until there are results
+
+        # --- Console ---
+        self.console = tk.Text(frame_run, height=10, wrap="word") # Reduced height
         self.console.pack(fill="both", expand=True, padx=6, pady=(0,6))
+
+        # --- Collapsible Results Frame (Initially Hidden) ---
+        self.frame_results = ttk.LabelFrame(frame_run, text="Export Tools")
+        # We will build the contents of this frame in the next step
+        # --- UI elements inside the results frame ---
+
+        # --- Top bar for proxy destination ---
+        proxy_bar = ttk.Frame(self.frame_results)
+        proxy_bar.pack(fill="x", padx=6, pady=(6,0))
+
+        ttk.Label(proxy_bar, text="Proxy Destination:").pack(side="left")
+        self.proxy_dest_var = tk.StringVar()
+        proxy_entry = ttk.Entry(proxy_bar, textvariable=self.proxy_dest_var)
+        proxy_entry.pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Button(proxy_bar, text="Choose Folder...", command=self.choose_proxy_destination).pack(side="left")
+
+        # --- TreeView for results ---
+        tree_frame = ttk.Frame(self.frame_results)
+        tree_frame.pack(fill="both", expand=True, padx=6, pady=6)
+
+        self.tree = ttk.Treeview(tree_frame, columns=("File", "Classification", "Project"), show="headings")
+        self.tree.bind("<Double-1>", self.on_tree_click)
+        self.tree.heading("File", text="File")
+        self.tree.heading("Classification", text="Classification")
+        self.tree.heading("Project", text="Project")
+        self.tree.column("File", width=400)
+        self.tree.column("Classification", width=100)
+        self.tree.column("Project", width=200)
+
+        # Add a scrollbar
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+
+        # --- Bottom bar for action buttons ---
+        action_bar = ttk.Frame(self.frame_results)
+        action_bar.pack(fill="x", padx=6, pady=(0,6))
+        
+        # Progress bar (initially hidden)
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(action_bar, variable=self.progress_var, maximum=100)
+        # The label for progress text
+        self.progress_label_var = tk.StringVar()
+        self.progress_label = ttk.Label(action_bar, textvariable=self.progress_label_var)
+
+        ttk.Button(action_bar, text="Select All", command=self.select_all).pack(side="left")
+        ttk.Button(action_bar, text="Deselect All", command=self.deselect_all).pack(side="left", padx=4)
+        ttk.Button(action_bar, text="Generate Proxies for Selected", command=self.on_generate_proxies).pack(side="right")
 
         self.rowconfigure(4, weight=1)
         self.columnconfigure(0, weight=1)
@@ -364,6 +509,15 @@ class App(tk.Tk):
             row += 1
 
         grid.grid_columnconfigure(1, weight=1)
+        
+    def toggle_results_view(self):
+        """Shows or hides the results frame."""
+        if self.frame_results.winfo_viewable():
+        self.frame_results.pack_forget()
+        self.results_button.config(text="Show Export Tools")
+        else:
+        self.frame_results.pack(fill="both", expand=True, padx=6, pady=6)
+        self.results_button.config(text="Hide Export Tools")
 
     # ------------------- Persistence -------------------
     def autoload_config(self):
@@ -496,17 +650,28 @@ class App(tk.Tk):
         
         # --- Main Task Logic ---
         def task():
-            self.proc = True  # Use a simple flag to indicate running
-            self.log("Running classifier logic...")
+            self.proc = True
+            self.results_button.state(['disabled']) # Disable button during run
             try:
-                # Call the imported main function directly with our settings
-                run_classifier_logic(args_obj)
+                # The main() function now needs to return the results
+                results_list = run_classifier_logic(args_obj)
+
+                # Store the results
+                self.results_data = results_list
+                
+                self.populate_results_tree()
+
+                # Enable the button
+                self.results_button.state(['!disabled'])
+
                 self.log("[Process finished successfully]")
+                self.log(f"Found {len(self.results_data)} files. Click 'Show Export Tools' to view and export.")
+
             except Exception as e:
                 self.log(f"[ERROR] {e}")
             finally:
-                self.proc = None # Reset the flag
-
+                self.proc = None
+                
         # Run the classifier in a separate thread to keep the GUI responsive
         threading.Thread(target=task, daemon=True).start()
 
